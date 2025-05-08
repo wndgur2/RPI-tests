@@ -60,17 +60,12 @@ turret = Turret()
 # ------Example usage------
 
 target_x = -80
-target_y = -80
-target_z = 80
+target_y = 0
+target_z = 100
 
-# turret.laser.on()
-while(target_y<200 and target_x<200):
-    target_x+=15
-    target_y+=15
-    turret.look_at(target_x, target_y, target_z)
-    print(f"X: {target_x}, Y: {target_y}, Z: {target_z}")
-    time.sleep(0.1)
+turret.look_at(target_x, target_y, target_z)
 
+time.sleep(2)
 # -------------------------
 
 turret.off()
