@@ -2,3 +2,9 @@
 *.log
 *.whl
 models/
+**/venv
+*/hailo_env
+*/venv_hailo_rpi5_examples
+**/venv**
+**/output
+**/__pycache__

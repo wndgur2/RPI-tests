@@ -1,0 +1,8 @@
+{
+    "detection_threshold": 0.1,
+    "max_boxes":200,
+    "labels": [
+      "Bee",
+      "Wasp"
+    ]
+}

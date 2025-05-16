@@ -70,16 +70,11 @@ def pid(angle):
 turret = Turret()
 
 # ------Example usage------
+# 시간 측정
+print(turret.kit)
+turret.look_at(1200, 50, 100)
 
-target_x = -50
-target_y = -50
-target_z = 30
-
-while(target_x<=100):
-    turret.look_at(target_x, target_y, target_z)
-    time.sleep(1)
-    target_x += 20
-    target_y += 20
+time.sleep(1)
 
 # -------------------------
 

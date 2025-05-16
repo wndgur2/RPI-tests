@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# Usage:
+#   cd /home/ssafy/project/RPI-tests/ai
+#   git clone https://github.com/ifzhang/ByteTrack.git ByteTrack_src
+#   pip install loguru scipy filterpy motmetrics depthai numpy opencv-python hailo-platform
+#
+# Then run:
+#   ./wasp_tracker.py --hef ~/models/yolov8n.hef --conf 0.3
+
 # -*- coding: utf-8 -*-
 """
 WaspTracker
@@ -6,29 +14,45 @@ WaspTracker
 Oak-D Lite → Hailo-8 YOLOv8n → ByteTrack → (x,y,z) mm 좌표 스트림
 """
 import os
+import sys
+import signal
+import argparse
+from pathlib import Path
+
+# ByteTrack 소스 경로 설정
+script_dir = Path(__file__).resolve().parent
+byte_src = script_dir / 'ByteTrack_src'
+# ByteTrack_src/yolox 폴더를 모듈 검색 경로에 추가
+# ByteTrack_src(내 tracker 패키지 포함) 폴더를 모듈 검색 경로에 추가
+# ByteTrack_src 디렉토리를 모듈 검색 경로에 추가
+sys.path.insert(0, str(byte_src))
+
 import depthai as dai
 import numpy as np
 import cv2
 from yolox.tracker.byte_tracker import BYTETracker
-from hailo_platform.pyhailort import _pyhailort as core
+from hailo_platform.pyhailort import Device, Hef
 
 # ---------------- Hailo 초기화 ---------------- #
 class HailoYolo:
     def __init__(self, hef_path):
-        device = HailoDevice()
-        with core.Hef(hef_path) as hef:
-            ngs = device.configure(hef)
-        self.net = ngs[0]
-        self.input_vstream, = self.net.create_input_vstreams()
-        self.output_vstreams, = self.net.create_output_vstreams()
+        # Hailo-8 디바이스 초기화
+        self.device = Device()
+        with Hef(hef_path) as hef:
+            networks = self.device.configure(hef)
+        self.net = networks[0]
+        # 입출력 스트림 생성
+        self.input_stream, = self.net.create_input_vstreams()
+        self.output_streams, = self.net.create_output_vstreams()
 
     def infer(self, frame):
-        img = cv2.resize(frame, (640,640)).astype(np.float32) / 255.0
-        img = img.transpose(2,0,1).copy()
-        self.input_vstream.send(img)
-        return self.output_vstreams[0].recv()
+        # 프레임 전처리: resize, normalize, CHW
+        img = cv2.resize(frame, (640, 640)).astype(np.float32) / 255.0
+        img = img.transpose(2, 0, 1).copy()
+        self.input_stream.send(img)
+        return self.output_streams[0].recv()
 
-# ---------------- Oak-D 파이프 ---------------- #
+# ---------------- Oak-D 파이프라인 구성 ---------------- #
 def create_pipeline():
     pipeline = dai.Pipeline()
     cam = pipeline.createColorCamera()
@@ -36,13 +60,14 @@ def create_pipeline():
     cam.setInterleaved(False)
     cam.setFps(60)
 
-    stereo = pipeline.createStereoDepth()
-    mono_left  = pipeline.createMonoCamera()
+    mono_left = pipeline.createMonoCamera()
     mono_right = pipeline.createMonoCamera()
     mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     mono_left.setBoardSocket(dai.CameraBoardSocket.LEFT)
     mono_right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+
+    stereo = pipeline.createStereoDepth()
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
     stereo.setSubpixel(True)
@@ -55,24 +80,24 @@ def create_pipeline():
 
     xout_depth = pipeline.createXLinkOut()
     xout_depth.setStreamName("depth")
-    stereo.depth.link(xout_depth.input)
+    stereo.disparity.link(xout_depth.input)
+
     return pipeline
 
 # -------------- 메인 추적 클래스 -------------- #
 class WaspTracker:
     def __init__(self, hef_path, conf_th=0.25):
         self.detector = HailoYolo(hef_path)
-        self.tracker  = BYTETracker()
+        self.tracker = BYTETracker(track_thresh=conf_th)
         self.target_id = None
         self.conf_th = conf_th
 
         self.pipeline = create_pipeline()
         self.device = dai.Device(self.pipeline)
-        self.q_rgb   = self.device.getOutputQueue("rgb",   maxSize=4, blocking=False)
-        self.q_depth = self.device.getOutputQueue("depth", maxSize=4, blocking=False)
+        self.q_rgb = self.device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+        self.q_depth = self.device.getOutputQueue(name="depth", maxSize=4, blocking=False)
 
     def _select_track(self, tracks):
-        """첫 프레임에서 임의(0번째) 트랙을 고정."""
         if self.target_id is None and tracks:
             self.target_id = tracks[0].track_id
 
@@ -81,39 +106,39 @@ class WaspTracker:
             in_rgb = self.q_rgb.get()
             in_depth = self.q_depth.get()
             frame = in_rgb.getCvFrame()
-            depth_frame = in_depth.getFrame()  # uint16 disparity 깊이(mm)
+            depth_frame = in_depth.getFrame()
 
             detections = self.detector.infer(frame)
-            # YOLOv8 NMS 출력: (n,7)[x1,y1,x2,y2,score,class,id] id = -1 (NMS)
             dets = []
             for d in detections:
-                x1,y1,x2,y2,conf,cls,_ = d
-                if conf < self.conf_th or int(cls)!=0:  # 0번 클래스를 'Wasp'로 가정
+                x1, y1, x2, y2, conf, cls, _ = d
+                if conf < self.conf_th or int(cls) != 0:
                     continue
-                dets.append([x1,y1,x2,y2,conf])
-            tracks = self.tracker.update(np.array(dets), frame.shape)
+                dets.append([x1, y1, x2, y2, conf])
 
+            tracks = self.tracker.update(np.array(dets), frame.shape)
             self._select_track(tracks)
 
             if self.target_id is not None:
-                # 타깃 트랙 찾기
-                match = next((t for t in tracks if t.track_id==self.target_id), None)
+                match = next((t for t in tracks if t.track_id == self.target_id), None)
                 if match:
-                    x1,y1,x2,y2 = map(int, match.tlbr)
-                    cx,cy = (x1+x2)//2, (y1+y2)//2
-                    z_mm  = int(np.median(depth_frame[y1:y2, x1:x2]))
-                    print(f"{self.target_id}: ({cx},{cy},{z_mm})")
-                else:        # 프레임에서 사라짐
+                    x1, y1, x2, y2 = map(int, match.tlbr)
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    z_mm = int(np.median(depth_frame[y1:y2, x1:x2]))
+                    print(f"ID {self.target_id}: X={cx}, Y={cy}, Z={z_mm}mm")
+                else:
                     self.target_id = None
-                    print("null")
+                    print("ID lost, selecting new...")
             else:
-                print("null")
+                print("No target yet...")
 
 if __name__ == "__main__":
-    import argparse, signal, sys
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hef", default="~/models/yolov8n.hef")
+    ap.add_argument("--hef", default="~/models/yolov8n.hef", help="Path to HEF file")
+    ap.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold")
     args = ap.parse_args()
-    wt = WaspTracker(os.path.expanduser(args.hef))
-    signal.signal(signal.SIGINT, lambda s,f: sys.exit(0))
+    hef_path = os.path.expanduser(args.hef)
+
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+    wt = WaspTracker(hef_path, conf_th=args.conf)
     wt.run()
