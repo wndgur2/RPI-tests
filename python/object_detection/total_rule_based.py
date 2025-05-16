@@ -25,7 +25,7 @@ def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: flo
     latency = time.perf_counter() - start_time
     print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m | ⏱ {latency*1000:.1f} ms")
     if turret:
-        turret.look_at(x * 1000, y * -1000, z * 1000)
+        turret.look_at(x * 1000, y * 1000, z * 1000)
 
 def build_pipeline():
     pipeline = dai.Pipeline()
@@ -61,7 +61,7 @@ def build_pipeline():
 def main(turret_enabled: bool = False):
     turret = None
     if turret_enabled:
-        from turret import Turret
+        from turret.turret import Turret
         turret = Turret()
         turret.laser.on()
 
@@ -140,4 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("-turret", type=str, default="false", help="Enable turret control (true/false)")
     args = parser.parse_args()
     turret_flag = args.turret.lower() == "true"
-    main(turret_enabled=turret_flag)
+    try:
+        main(turret_enabled=turret_flag)
+    finally:
+        turret.off()

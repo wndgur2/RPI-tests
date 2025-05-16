@@ -3,11 +3,13 @@ import cv2
 import numpy as np
 import queue
 import threading
+import time
+import argparse
+
 from object_detection_utils import ObjectDetectionUtils
 from utils import HailoAsyncInference
 from supervision import ByteTrack, Detections
-import time
-from turret.turret import Turret 
+
 
 MODEL_PATH     = "/home/ssafy/project/RPI-tests/python/object_detection/models/yolov8n.hef"
 LABELS_PATH    = "/home/ssafy/project/RPI-tests/python/object_detection/wasp.txt"
@@ -20,15 +22,14 @@ INPUT_SIZE     = 640
 FRAME_WIDTH    = 1920
 FRAME_HEIGHT   = 1080
 
-def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: float, turret: Turret):
-# def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: float):
+def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: float, turret=None):
     latency = time.perf_counter() - start_time
     print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m | ⏱ {latency*1000:.1f} ms")
-    turret.look_at(x*1000, y*1000, z*1000)
+    if turret and z != 0:
+        turret.look_at(x * 1000, y * -1000, z * 1000)
 
 def build_pipeline():
     pipeline = dai.Pipeline()
-
     cam = pipeline.createColorCamera()
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setVideoSize(FRAME_WIDTH, FRAME_HEIGHT)
@@ -70,9 +71,13 @@ def build_pipeline():
 
     return pipeline
 
-def main():
-    turret = Turret()
-    turret.laser.on()
+def main(turret_enabled: bool = False):
+    turret = None
+    if turret_enabled:
+        from turret.turret import Turret
+        turret = Turret()
+        turret.laser.on()
+
     pipeline = build_pipeline()
     with dai.Device(pipeline) as dev:
         q_rgb     = dev.getOutputQueue("rgb", maxSize=1, blocking=False)
@@ -86,9 +91,9 @@ def main():
         threading.Thread(target=hailo_inf.run, daemon=True).start()
 
         tracker = ByteTrack(TRACK_THRESH, TRACK_BUFFER, 0.65, FPS)
+        target_track_id = None
 
         while True:
-
             start_time = time.perf_counter()
             in_rgb = q_rgb.tryGet()
             if in_rgb is None:
@@ -99,10 +104,7 @@ def main():
             proc = det_utils.preprocess(rgb_for_model, INPUT_SIZE, INPUT_SIZE)
             in_q.put(([frame_bgr], [proc]))
 
-            raw = out_q.get()
-            # print(f"[Profiler] Inference took {(infer_end - infer_start)*1000:.1f} ms")
-            _, inference_results = raw
-
+            _, inference_results = out_q.get()
             dets = det_utils.extract_detections(inference_results, threshold=MIN_SCORE)
 
             wt_dets = []
@@ -125,22 +127,16 @@ def main():
                 class_id = np.zeros((0,), dtype=int)
 
             detections = Detections(xyxy=xyxy, confidence=confidence, class_id=class_id)
-
-            target_track_id = None
             tracked = tracker.update_with_detections(detections=detections)
-
             tracked_ids = [int(tid) for tid in tracked.tracker_id]
 
-            # 현재 타겟이 없거나 사라졌는지 확인
             if target_track_id not in tracked_ids:
-                # 새로운 타겟 선택: confidence score 기준
                 if len(tracked.xyxy) > 0:
                     best_idx = np.argmax(tracked.confidence)
                     target_track_id = int(tracked.tracker_id[best_idx])
                 else:
-                    target_track_id = None  # 아무 객체도 없으면 초기화
+                    target_track_id = None
 
-            # 타겟 ID가 있다면 해당 객체만 spatial 계산
             if target_track_id is not None:
                 for i, (bbox, tid) in enumerate(zip(tracked.xyxy, tracked.tracker_id)):
                     if int(tid) == target_track_id:
@@ -162,9 +158,14 @@ def main():
                             coords = spatial_data[0].spatialCoordinates
                             x, y, z = coords.x / 1000.0, coords.y / 1000.0, coords.z / 1000.0
                             on_wasp_tracked(target_track_id, x, y, z, start_time, turret)
-                        break  # 한 마리만 처리하고 루프 종료
+                        break
 
-    turret.off()
+    if turret:
+        turret.off()
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-turret", type=str, default="false", help="Enable turret control (true/false)")
+    args = parser.parse_args()
+    turret_flag = args.turret.lower() == "true"
+    main(turret_enabled=turret_flag)
