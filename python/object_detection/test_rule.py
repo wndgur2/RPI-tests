@@ -8,14 +8,14 @@ from utils import HailoAsyncInference
 from supervision import ByteTrack, Detections
 import time
 
-MODEL_PATH     = "/home/ssafy/project/RPI-tests/python/object_detection/models/yolov8n.hef"
+MODEL_PATH     = "/home/ssafy/project/RPI-tests/python/object_detection/models/yolov8n_1280.hef"
 LABELS_PATH    = "/home/ssafy/project/RPI-tests/python/object_detection/wasp.txt"
 BATCH_SIZE     = 1
 TRACK_THRESH   = 0.5
 TRACK_BUFFER   = 30
 FPS            = 30
 MIN_SCORE      = 0.1
-INPUT_SIZE     = 640
+INPUT_SIZE     = 1280
 FRAME_WIDTH    = 1920
 FRAME_HEIGHT   = 1080
 FOCAL_LENGTH   = 875.0  # OAK-D Lite default fx, fy

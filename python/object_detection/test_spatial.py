@@ -7,9 +7,9 @@ from object_detection_utils import ObjectDetectionUtils
 from utils import HailoAsyncInference
 from supervision import ByteTrack, Detections
 import time
-from turret.turret import Turret 
+from turret_module import Turret 
 
-MODEL_PATH     = "/home/ssafy/project/RPI-tests/python/object_detection/models/yolov8n.hef"
+MODEL_PATH     = "/home/ssafy/project/RPI-tests/python/object_detection/models/yolov8n2.hef"
 LABELS_PATH    = "/home/ssafy/project/RPI-tests/python/object_detection/wasp.txt"
 BATCH_SIZE     = 1
 TRACK_THRESH   = 0.5
@@ -17,14 +17,15 @@ TRACK_BUFFER   = 30
 FPS            = 30
 MIN_SCORE      = 0.1
 INPUT_SIZE     = 640
-FRAME_WIDTH    = 1920
-FRAME_HEIGHT   = 1080
+FRAME_WIDTH    = 1080
+FRAME_HEIGHT   = 720
 
 def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: float, turret: Turret):
 # def on_wasp_tracked(track_id: int, x: float, y: float, z: float, start_time: float):
     latency = time.perf_counter() - start_time
     print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m | ⏱ {latency*1000:.1f} ms")
-    turret.look_at(x*1000, y*1000, z*1000)
+    if z > 0:
+        turret.look_at(x*1000, y*1000, z*1000)
 
 def build_pipeline():
     pipeline = dai.Pipeline()
@@ -85,7 +86,7 @@ def main():
         hailo_inf = HailoAsyncInference(MODEL_PATH, in_q, out_q, BATCH_SIZE, send_original_frame=True)
         threading.Thread(target=hailo_inf.run, daemon=True).start()
 
-        tracker = ByteTrack(TRACK_THRESH, TRACK_BUFFER, 0.65, FPS)
+        tracker = ByteTrack(TRACK_THRESH, TRACK_BUFFER, 0.1, FPS)
 
         while True:
 

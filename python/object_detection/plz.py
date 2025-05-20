@@ -5,8 +5,9 @@ import queue
 import threading
 import time
 import argparse
+import os
 
-from object_detection_utils import ObjectDetectionUtils
+from object_detection_utils2 import ObjectDetectionUtils
 from utils import HailoAsyncInference
 from supervision import ByteTrack, Detections
 from filterpy.kalman import UnscentedKalmanFilter as UKF
@@ -24,6 +25,8 @@ INPUT_SIZE = 640
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 
+os.makedirs("debug_frames", exist_ok=True)
+
 def on_wasp_tracked(track_id, x, y, z, turret=None):
     print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m")
     if turret and z != 0:
@@ -36,7 +39,6 @@ def build_pipeline():
     cam.setVideoSize(FRAME_WIDTH, FRAME_HEIGHT)
     cam.setInterleaved(False)
     cam.setFps(FPS)
-    # cam.initialControl.setManualExposure(500, 800)
 
     xout_rgb = pipeline.createXLinkOut()
     xout_rgb.setStreamName("rgb")
@@ -50,8 +52,8 @@ def build_pipeline():
     monoR.setResolution(dai.MonoCameraProperties.SensorResolution.THE_480_P)
 
     stereo = pipeline.createStereoDepth()
-    stereo.setSubpixel(True)  # 더 높은 정밀도
-    stereo.setLeftRightCheck(True)  # 오류 줄이기
+    stereo.setSubpixel(True)
+    stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
     stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
@@ -86,6 +88,7 @@ def main(turret_enabled=False, use_ukf=False):
         det_utils = ObjectDetectionUtils(LABELS_PATH)
         frame_q = queue.Queue(maxsize=1)
         result_q = queue.Queue()
+        meta_q = queue.Queue(maxsize=1)  # To store (scale, x_offset, y_offset)
 
         hailo_inf = HailoAsyncInference(MODEL_PATH, frame_q, result_q, BATCH_SIZE, send_original_frame=True)
         threading.Thread(target=hailo_inf.run, daemon=True).start()
@@ -93,16 +96,13 @@ def main(turret_enabled=False, use_ukf=False):
         def frame_reader():
             while True:
                 in_rgb = q_rgb.get()
-                device_ts = in_rgb.getTimestamp().total_seconds()
-                host_ts = time.monotonic()
-                delay_ms = (host_ts - device_ts) * 1000
-                # print(f"[USB Delay Estimate] {delay_ms:.2f} ms")
-
                 frame_bgr = in_rgb.getCvFrame()
                 rgb_for_model = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                proc = det_utils.preprocess(rgb_for_model, INPUT_SIZE, INPUT_SIZE)
+                proc, scale, x_offset, y_offset = det_utils.preprocess(rgb_for_model, INPUT_SIZE, INPUT_SIZE)
                 frame_q.queue.clear()
                 frame_q.put(([frame_bgr], [proc]))
+                meta_q.queue.clear()
+                meta_q.put((scale, x_offset, y_offset))
 
         threading.Thread(target=frame_reader, daemon=True).start()
 
@@ -111,22 +111,32 @@ def main(turret_enabled=False, use_ukf=False):
         ukf = None
 
         while True:
-            if result_q.empty():
+            if result_q.empty() or meta_q.empty():
                 time.sleep(0.001)
                 continue
 
             frame_bgr, results = result_q.get()
+            scale, x_offset, y_offset = meta_q.get()
+
             dets = det_utils.extract_detections(results, threshold=MIN_SCORE)
 
-            wt_dets = [
-                [int(xmin * FRAME_WIDTH), int(ymin * FRAME_HEIGHT), int(xmax * FRAME_WIDTH), int(ymax * FRAME_HEIGHT), score]
-                for (ymin, xmin, ymax, xmax), cls, score in zip(dets['detection_boxes'], dets['detection_classes'], dets['detection_scores'])
-                if cls == 1
-            ]
+            xyxy = []
+            confidence = []
+            class_id = []
+            for (ymin, xmin, ymax, xmax), cls, score in zip(dets['detection_boxes'], dets['detection_classes'], dets['detection_scores']):
+                if cls == 1:
+                    box = [xmin * INPUT_SIZE, ymin * INPUT_SIZE, xmax * INPUT_SIZE, ymax * INPUT_SIZE]  # scaled
+                    xmin_rescaled = (box[0] - x_offset) / scale
+                    ymin_rescaled = (box[1] - y_offset) / scale
+                    xmax_rescaled = (box[2] - x_offset) / scale
+                    ymax_rescaled = (box[3] - y_offset) / scale
+                    xyxy.append([xmin_rescaled, ymin_rescaled, xmax_rescaled, ymax_rescaled])
+                    confidence.append(score)
+                    class_id.append(cls)
 
-            xyxy = np.array([d[:4] for d in wt_dets], dtype=float) if wt_dets else np.zeros((0, 4))
-            confidence = np.array([d[4] for d in wt_dets], dtype=float) if wt_dets else np.zeros((0,))
-            class_id = np.ones(len(wt_dets), dtype=int) if wt_dets else np.zeros((0,), dtype=int)
+            xyxy = np.array(xyxy, dtype=float)
+            confidence = np.array(confidence, dtype=float)
+            class_id = np.array(class_id, dtype=int)
 
             detections = Detections(xyxy=xyxy, confidence=confidence, class_id=class_id)
             tracked = tracker.update_with_detections(detections=detections)
@@ -171,6 +181,16 @@ def main(turret_enabled=False, use_ukf=False):
                                     ukf.predict()
                                     ukf.update([x, y, z])
                                     x, y, z = ukf.x[:3]
+
+                                debug_frame = frame_bgr.copy()
+                                cv2.rectangle(debug_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                                cv2.circle(debug_frame, (cx, cy), 4, (0, 0, 255), -1)
+                                text = f"ID:{target_track_id} X:{x:.2f} Y:{y:.2f} Z:{z:.2f} m"
+                                cv2.putText(debug_frame, text, (cx + 10, cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                filename = f"debug_frames/coords_{timestamp}.png"
+                                cv2.imwrite(filename, debug_frame)
+
                                 on_wasp_tracked(track_id=target_track_id, x=x, y=y, z=z, turret=turret)
                         break
 
@@ -179,7 +199,7 @@ def main(turret_enabled=False, use_ukf=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-turret", type=str, default="false")
+    parser.add_argument("-turret", type=str, default="true")
     parser.add_argument("-ukf", type=str, default="true")
     args = parser.parse_args()
 

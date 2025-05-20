@@ -20,16 +20,16 @@ PIN_LASER = 17
 OFFSET_X = 5
 OFFSET_Y = 151.5
 OFFSET_Z = 30
-# OFFSET_X = 5
-# OFFSET_Y = 181.5
-# OFFSET_Z = 30
+# OFFSET_X = 0
+# OFFSET_Y = 0
+# OFFSET_Z = 0
 
 import math
 import time
 from adafruit_servokit import ServoKit
 from gpiozero import LED
 import numpy as np
-from correction_map import ServoAngleCorrector
+from turret.correction_map import ServoAngleCorrector
 
 class Turret:
     def __init__(self):
@@ -58,19 +58,25 @@ class Turret:
         y = y - OFFSET_Y
         z = z - OFFSET_Z
 
+        # z *= 1.1
+        # x *= 0.8
+        # y -= 40
+
         print('[TURRET] look_at', x, y, z)
 
         angle_xy = self.calculate_angle_xy(x, y)
-        corrected_xy = self.correctors[0].correct(angle_xy)
+        # corrected_xy = self.correctors[0].correct(angle_xy)
 
         angle_yz = self.calculate_angle_yz(x, y, z)
-        corrected_yz = self.correctors[1].correct(angle_yz)
+        # corrected_yz = self.correctors[1].correct(angle_yz)
 
-        print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
-        print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
+        # print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
+        # print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
 
-        self.servo_xy.angle = clamp( corrected_xy)
-        self.servo_yz.angle = clamp(corrected_yz)
+        # self.servo_xy.angle = clamp( corrected_xy)
+        # self.servo_yz.angle = clamp(corrected_yz)
+        self.servo_xy.angle = clamp(angle_xy)
+        self.servo_yz.angle = clamp(angle_yz)
 
     def calculate_angle_xy(self, x, y):
         """Calculate angle on the X-Y plane (azimuth)"""
