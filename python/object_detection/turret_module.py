@@ -60,23 +60,23 @@ class Turret:
 
         # z *= 1.1
         # x *= 0.8
-        # y -= 40
+        # y -= 3
 
         print('[TURRET] look_at', x, y, z)
 
         angle_xy = self.calculate_angle_xy(x, y)
-        # corrected_xy = self.correctors[0].correct(angle_xy)
-
         angle_yz = self.calculate_angle_yz(x, y, z)
-        # corrected_yz = self.correctors[1].correct(angle_yz)
+
 
         # print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
         # print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
 
-        # self.servo_xy.angle = clamp( corrected_xy)
-        # self.servo_yz.angle = clamp(corrected_yz)
-        self.servo_xy.angle = clamp(angle_xy)
-        self.servo_yz.angle = clamp(angle_yz)
+        corrected_xy = self.correctors[0].correct(angle_xy)
+        corrected_yz = self.correctors[1].correct(angle_yz)
+        self.servo_xy.angle = clamp( corrected_xy)
+        self.servo_yz.angle = clamp(corrected_yz)
+        # self.servo_xy.angle = clamp(angle_xy)
+        # self.servo_yz.angle = clamp(angle_yz)
 
     def calculate_angle_xy(self, x, y):
         """Calculate angle on the X-Y plane (azimuth)"""
@@ -107,6 +107,7 @@ class Turret:
         self.kit.servo[CHANNEL_SERVO_YZ].angle = 90
         print('[TURRET] off')
         self.laser.off()
+
 def clamp(value, min_value=0, max_value=180):
     """Clamp the value to the range [min_value, max_value]"""
     return max(min(value, max_value), min_value)

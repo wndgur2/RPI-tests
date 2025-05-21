@@ -24,8 +24,7 @@ class ServoAngleCorrector:
     def correct(self, desired_angle):
         measured_angle = self.correct_fn(desired_angle)
 
-        print(f"[TURRET CORRECTOR] Desired angle: {desired_angle}")
-        print(f"[TURRET CORRECTOR] Measured angle: {measured_angle}")
+        print(f"[CORRECTOR] Correcting angle: {desired_angle} to {measured_angle}")
         return measured_angle
 
     def plot(self):

@@ -48,8 +48,8 @@ class Turret:
         # 레이저 초기화
         self.laser = LED(PIN_LASER)
 
-        self.corrector_xy = ServoAngleCorrector("turret/servo_calibration0.csv")
-        self.corrector_yz = ServoAngleCorrector("turret/servo_calibration1.csv")
+        self.corrector_xy = ServoAngleCorrector("servo_calibration0.csv")
+        self.corrector_yz = ServoAngleCorrector("servo_calibration1.csv")
 
         self.correctors = [self.corrector_xy, self.corrector_yz]
         

@@ -8,3 +8,7 @@ models/
 **/venv**
 **/output
 **/__pycache__
+**/det_**
+**/reproj_**
+**/depth**.png
+**/rgb**.png
