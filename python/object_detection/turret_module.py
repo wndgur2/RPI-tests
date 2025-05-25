@@ -2,7 +2,9 @@
 CHANNEL_SERVO_XY = 0
 CHANNEL_SERVO_YZ = 1
 
-ANGLE_OFFSET_XY = -4.7 # 빼기
+# ANGLE_OFFSET_XY = -8.4 # 빼기
+# ANGLE_OFFSET_XY = -4.7 # 빼기
+ANGLE_OFFSET_XY = 0 # 빼기
 
 # 서보 모터 6221MG의 최소, 최대 펄스 폭
 # 500us ~ 2500us
@@ -17,9 +19,15 @@ LASER_Z = 0
 # 레이저 GPIO 핀 번호
 PIN_LASER = 17
 
-OFFSET_X = 5
+# OFFSET_X = 5
+# 2025-05-21
+OFFSET_X = 4.5
 OFFSET_Y = 151.5
 OFFSET_Z = 30
+
+# OFFSET_X = -5
+# OFFSET_Y = 141.5
+# OFFSET_Z = 30
 # OFFSET_X = 0
 # OFFSET_Y = 0
 # OFFSET_Z = 0
@@ -30,11 +38,17 @@ from adafruit_servokit import ServoKit
 from gpiozero import LED
 import numpy as np
 from turret.correction_map import ServoAngleCorrector
+import busio
+import board
 
 class Turret:
     def __init__(self):
+        # i2c = busio.I2C(board.SCL, board.SDA)
+
+
         # 서보 컨트롤러 객체 생성
         self.kit = ServoKit(channels=16)
+        # self.kit = ServoKit(channels=16, i2c=i2c)
 
         # xz평면, yz평면 서보 모터 초기화
         self.servo_xy = self.kit.servo[CHANNEL_SERVO_XY]
@@ -59,21 +73,21 @@ class Turret:
         z = z - OFFSET_Z
 
         # z *= 1.1
-        # x *= 0.8
-        # y -= 3
+        x -= 30 if x>0 else 22
+        y += 10 if x>0 else 26
 
         print('[TURRET] look_at', x, y, z)
 
         angle_xy = self.calculate_angle_xy(x, y)
         angle_yz = self.calculate_angle_yz(x, y, z)
 
-
-        # print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
-        # print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
-
         corrected_xy = self.correctors[0].correct(angle_xy)
         corrected_yz = self.correctors[1].correct(angle_yz)
-        self.servo_xy.angle = clamp( corrected_xy)
+
+        print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
+        print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
+
+        self.servo_xy.angle = clamp(corrected_xy)
         self.servo_yz.angle = clamp(corrected_yz)
         # self.servo_xy.angle = clamp(angle_xy)
         # self.servo_yz.angle = clamp(angle_yz)

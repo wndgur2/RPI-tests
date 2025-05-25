@@ -15,6 +15,12 @@ angle_yz = 90
 # angle_xy = 90
 # angle_yz = 85
 
+
+# turret.servo_xy.angle = 0
+# turret.servo_yz.angle = 0
+
+# time.sleep(100)
+
 while True:
     angle_xy +=45
     if(angle_xy > 180):

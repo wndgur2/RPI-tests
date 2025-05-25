@@ -37,11 +37,12 @@ def zTest(turret, target_z):
 
 turret = Turret()
 turret.laser.on()
-turret.look_at(0,0,Z)
-time.sleep(20)
+# turret.look_at(0,0,Z)
+# time.sleep(20)``
 
 # yTest(turret, 10)
-# xTest(turret, -50)
+# xTest(turret, 150)
 # diagonalTest(turret)
+turret.off()
 
 turret.off()

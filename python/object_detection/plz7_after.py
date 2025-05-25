@@ -22,7 +22,6 @@ TRACK_BUFFER = 30
 FPS = 30
 PREDICT_FRAMES_AHEAD = 3
 MIN_SCORE = 0.15
-#MIN_SCORE = 0.7
 INPUT_SIZE = 640
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
@@ -41,17 +40,18 @@ os.makedirs("debug_frames", exist_ok=True)
 os.makedirs("debug_depth", exist_ok=True)
 
 def on_wasp_tracked(track_id, x, y, z, turret=None):
-    print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m")
+    # print(f"[Callback] ID={track_id:2d} → X={x:.3f} m, Y={y:.3f} m, Z={z:.3f} m")
     if z > 0:
         if turret:
             global last_hornet_found_time
             last_hornet_found_time = time.time()
             turret.laser.on()
-            turret.look_at(x * 1000, y * 1000, z * 1000)
+            turret.look_at(x * 1000 + 17, y * 1000 + 10, z * 1000)
         global last_notification_time
         current_time = time.time()
         if current_time - last_notification_time > NOTIFICATION_DELAY_MIN * 60:
             last_notification_time = current_time
+            # print("[Callback] Notification response:")
             send_notification_async()
 
 def save_images_async(depth_img, rgb_img):
@@ -114,39 +114,72 @@ def main(turret_enabled=False, use_ukf=False):
         dist_coeffs = np.array(calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A), dtype=np.float64)
         fx_val, fy_val = intrinsics[0, 0], intrinsics[1, 1]
         cx0, cy0 = intrinsics[0, 2], intrinsics[1, 2]
-        print(f"[Intrinsics] fx={fx_val:.1f}, fy={fy_val:.1f}, cx={cx0:.1f}, cy={cy0:.1f}")
+        # print(f"[Intrinsics] fx={fx_val:.1f}, fy={fy_val:.1f}, cx={cx0:.1f}, cy={cy0:.1f}")
 
         det_utils = ObjectDetectionUtils(LABELS_PATH)
         frame_q, result_q, meta_q = queue.Queue(1), queue.Queue(), queue.Queue(1)
         hailo_inf = HailoAsyncInference(MODEL_PATH, frame_q, result_q, BATCH_SIZE, send_original_frame=True)
-        threading.Thread(target=hailo_inf.run, daemon=True).start()
+
+        def hailo_runner():
+            try:
+                # print("[DEBUG] Hailo inference thread started.")
+                hailo_inf.run()
+            except Exception as e:
+                print(f"[ERROR] Hailo runner crashed: {e}")
+
+        threading.Thread(target=hailo_runner, daemon=True).start()
 
         def frame_reader():
+            # print("[DEBUG] Frame reader thread started.")
             while True:
-                if turret and (time.time() - last_hornet_found_time > LASER_OFF_DELAY_SEC):
-                    turret.laser.off()
-                    
-                if not result_q.empty(): time.sleep(0.001); continue
-                in_rgb = q_rgb.get()
-                frame_bgr = in_rgb.getCvFrame()
-                rgb_for_model = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                proc, scale, x_offset, y_offset = det_utils.preprocess(rgb_for_model, INPUT_SIZE, INPUT_SIZE)
                 try:
+                    if turret and (time.time() - last_hornet_found_time > LASER_OFF_DELAY_SEC):
+                        turret.laser.off()
+
+                    if not result_q.empty():
+                        time.sleep(0.001)
+                        continue
+
+                    in_rgb = q_rgb.tryGet()
+                    if in_rgb is None:
+                        time.sleep(0.001)
+                        continue
+
+                    frame_bgr = in_rgb.getCvFrame()
+                    rgb_for_model = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    proc, scale, x_offset, y_offset = det_utils.preprocess(rgb_for_model, INPUT_SIZE, INPUT_SIZE)
+
                     frame_q.put(([frame_bgr], [proc]), block=False)
-                    meta_q.queue.clear()
-                    meta_q.put((scale, x_offset, y_offset))
+                    meta_q.put((scale, x_offset, y_offset))  # 순서 보장
+                    # print("[DEBUG] Frame and meta info added to queues")
+
                 except queue.Full:
-                    pass
+                    print("[WARN] frame_q or meta_q is full — skipping frame")
+                except Exception as e:
+                    print(f"[ERROR] Frame reader exception: {e}")
+
+
         threading.Thread(target=frame_reader, daemon=True).start()
 
         tracker = ByteTrack(TRACK_THRESH, TRACK_BUFFER, 0.65, FPS)
         target_track_id, ukf = None, None
+        prev_cx, prev_cy, prev_z = 0, 0, 0
+        static_frame_count = 0
 
         while True:
-            if result_q.empty() or meta_q.empty(): time.sleep(0.001); continue
+            # if result_q.empty():
+                # print("[DEBUG] Waiting for result_q...")
+            # if meta_q.empty():
+                # print("[DEBUG] Waiting for meta_q...")
+            if result_q.empty() or meta_q.empty():
+                time.sleep(0.001)
+                continue
+
             frame_bgr, results = result_q.get()
+            # print("[DEBUG] Result received from inference")
             scale, x_offset, y_offset = meta_q.get()
             dets = det_utils.extract_detections(results, threshold=MIN_SCORE)
+            # print(f"[DEBUG] Detections extracted: {len(dets['detection_boxes'])}")
 
             xyxy, confidence, class_id = [], [], []
             for (ymin, xmin, ymax, xmax), cls, score in zip(dets['detection_boxes'], dets['detection_classes'], dets['detection_scores']):
@@ -170,12 +203,16 @@ def main(turret_enabled=False, use_ukf=False):
                 if tracked.xyxy.size > 0:
                     best_idx = np.argmax(tracked.confidence)
                     target_track_id = int(tracked.tracker_id[best_idx])
+                    static_frame_count = 0
                     if use_ukf:
                         def fx_kf(x, dt): x[:3] += x[3:] * dt; return x
                         def hx_kf(x): return x[:3]
                         points = MerweScaledSigmaPoints(n=6, alpha=0.1, beta=2., kappa=0)
                         ukf = UKF(dim_x=6, dim_z=3, fx=fx_kf, hx=hx_kf, dt=PREDICT_FRAMES_AHEAD * (1.0 / FPS), points=points)
-                        ukf.x = np.zeros(6); ukf.P *= 10.0; ukf.Q *= 0.01; ukf.R *= 0.1
+                        ukf.x = np.zeros(6)
+                        ukf.P *= 10.0
+                        ukf.Q *= 0.01
+                        ukf.R *= 0.1
                 else:
                     target_track_id, ukf = None, None
 
@@ -183,58 +220,52 @@ def main(turret_enabled=False, use_ukf=False):
                 if int(tid) == target_track_id:
                     x1, y1, x2, y2 = bbox
                     cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                    # print(f"[TRACKED] cx={cx}, cy={cy}")
                     depth_msg = q_depth.tryGet()
-                    if depth_msg is None: continue
+                    if depth_msg is None:
+                        continue
                     depth_frame = depth_msg.getFrame()
-                    depth_h, depth_w = depth_frame.shape
                     depth_cx, depth_cy = cx, cy
-
-                    print(f"[TRACKED] cx={cx}, cy={cy} → depth_cx={depth_cx}, depth_cy={depth_cy}")
-                    print(f"[DEPTH_FRAME] shape={depth_frame.shape}, min={np.min(depth_frame)}, max={np.max(depth_frame)}")
-
                     roi_size = 100
                     half_roi = roi_size // 2
-                    if half_roi <= depth_cy < depth_h - half_roi and half_roi <= depth_cx < depth_w - half_roi:
-                        roi = depth_frame[depth_cy - half_roi:depth_cy + half_roi, depth_cx - half_roi:depth_cx + half_roi]
-                        valid = roi[roi > 0]
-                        if valid.size == 0:
-                            print(f"[DEPTH] No valid depth in ROI at ({depth_cx},{depth_cy})")
-                            continue
-                        depth_mm = np.min(valid)
-                        print(f"[DEPTH] min depth (mm): {depth_mm}")
+                    if not (half_roi <= depth_cx < depth_frame.shape[1] - half_roi and half_roi <= depth_cy < depth_frame.shape[0] - half_roi):
+                        continue
+                    roi = depth_frame[depth_cy - half_roi:depth_cy + half_roi, depth_cx - half_roi:depth_cx + half_roi]
+                    valid = roi[roi > 0]
+                    if valid.size == 0:
+                        continue
+                    depth_mm = np.min(valid)
+                    # print(f"[DEPTH] min depth (mm): {depth_mm}")
+                    R = depth_mm / 1000.0
+                    pt = np.array([[[cx, cy]]], dtype=np.float32)
+                    und = cv2.undistortPoints(pt, intrinsics, dist_coeffs, P=intrinsics)
+                    u_ud, v_ud = und[0, 0]
+                    theta_x = (u_ud - cx0) / fx_val
+                    theta_y = (v_ud - cy0) / fy_val
+                    Z = R / np.sqrt(1 + theta_x ** 2 + theta_y ** 2) if USE_RADIAL_TO_Z_CONVERSION else R
+                    # X = theta_x * Z * (1 - Z * 0.27)
+                    # Y = theta_y * Z * (1 - Z * 0.25)
+                    X = theta_x * Z * (1 - Z * 0.78)
+                    Y = theta_y * Z * (1 - Z * 0.64)
 
-                        vis = cv2.normalize(depth_frame, None, 0, 255, cv2.NORM_MINMAX)
-                        vis = cv2.applyColorMap(vis.astype(np.uint8), cv2.COLORMAP_JET)
-                        cv2.circle(vis, (depth_cx, depth_cy), 5, (255, 255, 255), -1)
-                        cv2.circle(frame_bgr, (cx, cy), 5, (0, 255, 0), -1)
+                    if abs(prev_cx - cx) < 3 and abs(prev_cy - cy) < 3 and abs(prev_z - Z) < 0.01:
+                        static_frame_count += 1
+                    else:
+                        static_frame_count = 0
+                    prev_cx, prev_cy, prev_z = cx, cy, Z
 
-                        if ENABLE_DEBUG_SAVE and time.time() - last_save_time > 1:
-                            last_save_time = time.time()
-                            save_images_async(vis.copy(), frame_bgr.copy())
+                    if static_frame_count > FPS * 2:
+                        # print("[TRACKING] Object too static, resetting tracker.")
+                        target_track_id = None
+                        static_frame_count = 0
+                        continue
 
-                        R = depth_mm / 1000.0
-                        pt = np.array([[[cx, cy]]], dtype=np.float32)
-                        und = cv2.undistortPoints(pt, intrinsics, dist_coeffs, P=intrinsics)
-                        u_ud, v_ud = und[0, 0]
-                        theta_x = (u_ud - cx0) / fx_val
-                        theta_y = (v_ud - cy0) / fy_val
+                    if use_ukf and ukf:
+                        ukf.predict()
+                        ukf.update([X, Y, Z])
+                        X, Y, Z = ukf.x[:3]
 
-                        if USE_RADIAL_TO_Z_CONVERSION:
-                            Z = R / np.sqrt(1 + theta_x ** 2 + theta_y ** 2)
-                        else:
-                            Z = R
-
-                        # Z에 따라 보정 계수 줄이기
-                        X = theta_x * Z * (1 - Z * 0.31)
-                        Y = theta_y * Z * (1 - Z * 0.36)
-
-                        if use_ukf and ukf:
-                            ukf.predict()
-                            ukf.update([X, Y, Z])
-                            X, Y, Z = ukf.x[:3]
-
-                        on_wasp_tracked(track_id=target_track_id, x=X, y=Y, z=Z, turret=turret)
-                    break
+                    on_wasp_tracked(track_id=target_track_id, x=X, y=Y, z=Z, turret=turret)
 
     if turret:
         turret.off()
@@ -244,8 +275,6 @@ if __name__ == "__main__":
     parser.add_argument("-turret", type=str, default="false")
     parser.add_argument("-ukf", type=str, default="true")
     args = parser.parse_args()
-
     turret_flag = args.turret.lower() == "true"
     ukf_flag = args.ukf.lower() == "true"
-
     main(turret_enabled=turret_flag, use_ukf=ukf_flag)
