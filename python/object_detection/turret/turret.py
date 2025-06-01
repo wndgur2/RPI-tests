@@ -2,7 +2,7 @@
 CHANNEL_SERVO_XY = 0
 CHANNEL_SERVO_YZ = 1
 
-ANGLE_OFFSET_XY = -8.4 # 빼기
+ANGLE_OFFSET_XY = -8.7 # 빼기
 # ANGLE_OFFSET_XY = -4.7 # 빼기
 
 # 서보 모터 6221MG의 최소, 최대 펄스 폭
@@ -16,17 +16,11 @@ LASER_Y = 0
 LASER_Z = 0
 
 # 레이저 GPIO 핀 번호
-PIN_LASER = 17
+PIN_LASER = 23
 
-# OFFSET_X = 5
-# 2025-05-21
-OFFSET_X = 4.5
+OFFSET_X = 5
 OFFSET_Y = 151.5
 OFFSET_Z = 30
-
-# OFFSET_X = -5
-# OFFSET_Y = 141.5
-# OFFSET_Z = 30
 # OFFSET_X = 0
 # OFFSET_Y = 0
 # OFFSET_Z = 0
@@ -35,20 +29,15 @@ import math
 import time
 from adafruit_servokit import ServoKit
 from gpiozero import LED
-
 import numpy as np
 from correction_map import ServoAngleCorrector
-import busio
-import board
 
 class Turret:
     def __init__(self):
-        # i2c = busio.I2C(board.SCL, board.SDA)
-
+        print('[TURRET] Initializing turret')
 
         # 서보 컨트롤러 객체 생성
         self.kit = ServoKit(channels=16)
-        # self.kit = ServoKit(channels=16, i2c=i2c)
 
         # xz평면, yz평면 서보 모터 초기화
         self.servo_xy = self.kit.servo[CHANNEL_SERVO_XY]
@@ -62,19 +51,24 @@ class Turret:
         # 레이저 초기화
         self.laser = LED(PIN_LASER)
 
-        self.corrector_xy = ServoAngleCorrector("servo_calibration0.csv")
-        self.corrector_yz = ServoAngleCorrector("servo_calibration1.csv")
+        self.corrector_xy = ServoAngleCorrector("~/project/RPI-tests/python/object_detection/turret/servo_calibration0.csv")
+        self.corrector_yz = ServoAngleCorrector("~/project/RPI-tests/python/object_detection/turret/servo_calibration1.csv")
 
         self.correctors = [self.corrector_xy, self.corrector_yz]
+        time.sleep(1)
         
     def look_at(self, x, y, z):
         x = x - OFFSET_X 
         y = y - OFFSET_Y
         z = z - OFFSET_Z
 
-        # z *= 1.1
-        # x *= 0.8
-        # y -= 3
+        # 56cm
+        # x -= 15 if x>0 else 24
+        # y += 14 if x>0 else 22
+
+        # 72cm
+        x -= 14 if x>0 else 19
+        y += 29 if x>0 else 31
 
         print('[TURRET] look_at', x, y, z)
 
@@ -85,12 +79,12 @@ class Turret:
         # print(f'[TURRET] angle_xy: {angle_xy}, corrected_xy: {corrected_xy}')
         # print(f'[TURRET] angle_yz: {angle_yz}, corrected_yz: {corrected_yz}')
 
-        corrected_xy = self.correctors[0].correct(angle_xy)
-        corrected_yz = self.correctors[1].correct(angle_yz)
-        self.servo_xy.angle = clamp( corrected_xy)
-        self.servo_yz.angle = clamp(corrected_yz)
-        # self.servo_xy.angle = clamp(angle_xy)
-        # self.servo_yz.angle = clamp(angle_yz)
+        # corrected_xy = self.correctors[0].correct(angle_xy)
+        # corrected_yz = self.correctors[1].correct(angle_yz)
+        # self.servo_xy.angle = clamp( corrected_xy)
+        # self.servo_yz.angle = clamp(corrected_yz)
+        self.servo_xy.angle = clamp(angle_xy)
+        self.servo_yz.angle = clamp(angle_yz)
 
     def calculate_angle_xy(self, x, y):
         """Calculate angle on the X-Y plane (azimuth)"""
